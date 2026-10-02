@@ -1,12 +1,12 @@
 name: advisor
-version: 0.1.0
+version: 0.1.1
 description: >
   Advisor strategy for Hermes: run your chat on a cheap/low-effort model and
   consult a stronger model (e.g. Opus at high effort) only when a turn needs it.
   The main model can call the `advisor` tool; an optional Jev (TypeSafe) gate
   auto-escalates hard or high-stakes turns. Never switches the main model, so
   prompt caching is untouched.
-author: Steve Fetzer (superlowburn)
+author: superlowburn
 license: MIT
 homepage: https://github.com/superlowburn/hermes-advisor
 tags: [advisor, routing, cost, opus, jev]

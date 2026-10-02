@@ -56,3 +56,15 @@ def test_tool_uses_session_history_and_reports_errors(monkeypatch):
     assert r["advice"] == "advice" and "context-marker" in seen["user"]
     monkeypatch.setattr(core, "_call_model", lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
     assert "error" in json.loads(core.handle_tool({"question": "q"}, session_id="s4"))
+
+
+def test_allowlist_and_hourly_cap(monkeypatch):
+    import json
+    monkeypatch.setattr(core, "_call_model", lambda s, m, p: ("ok", "opus"))
+    monkeypatch.setattr(core, "settings", lambda: {**core.DEFAULTS, "allowed_users": ["steve"], "max_per_hour": 2})
+    core.remember("out", [], "stranger")
+    assert "restricted" in json.loads(core.handle_tool({"question": "q"}, session_id="out"))["error"]
+    core.remember("in", [], "steve")
+    assert json.loads(core.handle_tool({"question": "q"}, session_id="in"))["advice"] == "ok"
+    assert json.loads(core.handle_tool({"question": "q"}, session_id="in"))["advice"] == "ok"
+    assert "limit" in json.loads(core.handle_tool({"question": "q"}, session_id="in"))["error"]

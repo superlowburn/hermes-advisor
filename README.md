@@ -38,7 +38,11 @@ plugins:
       min_message_chars: 25      # don't score "ok" / "thanks"
       transcript_chars: 60000    # tail of the conversation the advisor reads
       platforms: []              # e.g. [discord] to gate only Discord
+      allowed_users: []          # platform user ids allowed to trigger it ([] = anyone your gateway admits)
+      max_per_hour: 20           # escalations per user per hour (0 = unlimited)
 ```
+
+On a shared server, set `allowed_users`. The advisor is your most expensive model, and anyone who can talk to your bot could otherwise trigger it. Local CLI/desktop sessions are always allowed.
 
 Pair it with a cheap main model, e.g. `hermes config set model.default claude-sonnet-5-5` and low reasoning effort.
 

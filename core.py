@@ -24,6 +24,8 @@ DEFAULTS: Dict[str, Any] = {
     "threshold": 0.7,           # Jev p(needs advisor) to escalate
     "min_message_chars": 25,    # skip "thanks", "ok", ...
     "platforms": [],            # empty = every platform
+    "allowed_users": [],        # sender ids allowed to trigger the advisor; empty = anyone the gateway admits
+    "max_per_hour": 20,         # escalations per sender per hour (0 = unlimited)
 }
 
 ADVISOR_SYSTEM = (
@@ -55,6 +57,8 @@ _lock = threading.Lock()
 _history: "OrderedDict[str, List[Any]]" = OrderedDict()
 _last_session: Optional[str] = None
 _MAX_SESSIONS = 64
+_senders: Dict[str, str] = {}
+_usage: Dict[str, List[float]] = {}
 
 
 def bind(ctx) -> None:
@@ -78,11 +82,13 @@ def settings() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------- transcript
-def remember(session_id: str, messages: List[Any]) -> None:
+def remember(session_id: str, messages: List[Any], sender_id: str = "") -> None:
     global _last_session
     if not session_id:
         return
     with _lock:
+        if sender_id:
+            _senders[session_id] = str(sender_id)
         _history[session_id] = messages
         _history.move_to_end(session_id)
         _last_session = session_id
@@ -138,6 +144,27 @@ def render_transcript(messages: List[Any], limit: int) -> str:
     return text
 
 
+def permit(session_id: Optional[str], s: Dict[str, Any]) -> Optional[str]:
+    """None if this session's sender may consult now, else the reason. Local CLI/desktop
+    sessions carry no sender id and are always the operator."""
+    with _lock:
+        sender = _senders.get(session_id or "", "")
+        allowed = [str(u) for u in (s.get("allowed_users") or [])]
+        if sender and allowed and sender not in allowed:
+            return "advisor is restricted to allowed users"
+        cap = int(s.get("max_per_hour") or 0)
+        if cap > 0:
+            key = sender or "local"
+            now = time.time()
+            hits = [t for t in _usage.get(key, []) if now - t < 3600]
+            if len(hits) >= cap:
+                _usage[key] = hits
+                return f"advisor hourly limit reached ({cap}/h)"
+            hits.append(now)
+            _usage[key] = hits
+    return None
+
+
 # ---------------------------------------------------------------- advisor call
 def consult(question: str, messages: List[Any], *, purpose: str) -> Dict[str, Any]:
     s = settings()
@@ -168,6 +195,9 @@ def _call_model(s: Dict[str, Any], messages: List[Dict[str, Any]], purpose: str)
 # ---------------------------------------------------------------- entry points
 def handle_tool(args: Dict[str, Any], session_id: Optional[str] = None, **_: Any) -> str:
     question = str((args or {}).get("question", ""))
+    denied = permit(session_id, settings())
+    if denied:
+        return json.dumps({"error": f"{denied}. Continue on your own judgment."})
     try:
         return json.dumps(consult(question, recall(session_id), purpose="tool"), ensure_ascii=False)
     except Exception as exc:
@@ -181,6 +211,9 @@ def handle_slash(raw_args: str) -> str:
         s = settings()
         return (f"advisor: {s['model']} (effort {s['reasoning_effort']}), gate mode {s['mode']}, "
                 f"threshold {s['threshold']}, Jev key {'set' if os.environ.get('TYPESAFE_API_KEY') else 'missing'}")
+    denied = permit(_last_session, settings())
+    if denied:
+        return f"advisor: {denied}"
     try:
         r = consult(question, recall(None), purpose="slash")
         return f"🧭 Advisor ({r['advisor_model']}, {r['latency_ms']} ms)\n\n{r['advice']}"
@@ -205,9 +238,9 @@ def jev_score(text: str, timeout: float = 4.0) -> Optional[float]:
 
 
 def on_pre_llm_call(session_id: str = "", user_message: Any = None, conversation_history=None,
-                    platform: str = "", **_: Any):
+                    platform: str = "", sender_id: str = "", **_: Any):
     messages = list(conversation_history or [])
-    remember(session_id, messages)
+    remember(session_id, messages, sender_id)
     s = settings()
     mode = str(s["mode"]).lower()
     if mode not in ("nudge", "auto"):
@@ -221,6 +254,10 @@ def on_pre_llm_call(session_id: str = "", user_message: Any = None, conversation
     if p is None or p < float(s["threshold"]):
         if p is not None:
             logger.info("advisor: gate p=%.2f below %.2f", p, float(s["threshold"]))
+        return None
+    denied = permit(session_id, s)
+    if denied:
+        logger.info("advisor: gate p=%.2f but %s", p, denied)
         return None
     logger.info("advisor: gate p=%.2f -> %s", p, mode)
     if mode == "nudge":
